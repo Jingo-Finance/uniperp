@@ -12,6 +12,7 @@
     "@emotion/is-prop-valid": "latest",
     "@eslint/eslintrc": "latest",
     "@hookform/resolvers": "^3.10.0",
+    "@lighthouse-web3/sdk": "^0.4.3",
     "@number-flow/react": "latest",
     "@pythnetwork/hermes-client": "^2.0.0",
     "@radix-ui/react-accordion": "1.2.2",
