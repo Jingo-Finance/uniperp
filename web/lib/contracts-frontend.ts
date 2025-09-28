@@ -191,12 +191,27 @@ const fundingOracleABI = [
 const perpsHookABI = [
   {
     inputs: [{ name: "poolId", type: "bytes32" }],
+    name: "getMarkPrice",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "poolId", type: "bytes32" }],
     name: "getMarketState",
     outputs: [
       {
         components: [
-          { name: "virtualBase", type: "uint128" },
-          { name: "virtualQuote", type: "uint128" },
+          { name: "virtualBase", type: "uint256" },
+          { name: "virtualQuote", type: "uint256" },
+          { name: "k", type: "uint256" },
+          { name: "globalFundingIndex", type: "int256" },
+          { name: "totalLongOI", type: "uint256" },
+          { name: "totalShortOI", type: "uint256" },
+          { name: "maxOICap", type: "uint256" },
+          { name: "lastFundingTime", type: "uint256" },
+          { name: "spotPriceFeed", type: "address" },
+          { name: "isActive", type: "bool" },
         ],
         name: "",
         type: "tuple",
@@ -208,8 +223,8 @@ const perpsHookABI = [
   {
     inputs: [
       { name: "poolId", type: "bytes32" },
-      { name: "newVirtualBase", type: "uint128" },
-      { name: "newVirtualQuote", type: "uint128" },
+      { name: "newVirtualBase", type: "uint256" },
+      { name: "newVirtualQuote", type: "uint256" },
     ],
     name: "emergencyRebalanceVAMM",
     outputs: [],

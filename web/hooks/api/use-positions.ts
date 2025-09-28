@@ -682,119 +682,252 @@ export function useClosePosition() {
         throw new Error("Close percentage must be between 1 and 100");
       }
 
-      // Get current mark price if not provided
-      let exitPrice = params.exitPrice;
-      if (!exitPrice) {
-        // In production, fetch from oracle
-        exitPrice = 2000; // Mock price
+      console.log("🔄 Closing Position with Real-Time Pyth Pricing");
+      console.log("📊 Position ID:", params.tokenId);
+      console.log("📈 Percentage to close:", percentage + "%");
+
+      // Generate pool ID (same as in script)
+      const poolId = keccak256(
+        encodeAbiParameters(
+          [
+            { name: "currency0", type: "address" },
+            { name: "currency1", type: "address" },
+            { name: "fee", type: "uint24" },
+            { name: "tickSpacing", type: "int24" },
+            { name: "hooks", type: "address" },
+          ],
+          [
+            contracts.mockVETH.address as `0x${string}`,
+            contracts.mockUSDC.address as `0x${string}`,
+            3000,
+            60,
+            contracts.perpsHook.address as `0x${string}`,
+          ]
+        )
+      );
+
+      console.log("🆔 Pool ID:", poolId);
+
+      // Fetch real-time ETH price from Pyth
+      const pythPrice = await fetchPythPrice();
+
+      // Get current position details
+      console.log("📊 Fetching position details...");
+      const position = (await publicClient.readContract({
+        address: contracts.positionManager.address,
+        abi: contracts.positionManager.abi as any,
+        functionName: "getPosition",
+        args: [BigInt(params.tokenId)],
+      })) as any;
+
+      if (!position || position.sizeBase === 0n) {
+        throw new Error("Position not found or already closed");
       }
 
-      let txHash: `0x${string}`;
+      const isLong = position.sizeBase > 0n;
+      const positionSize = isLong ? position.sizeBase : -position.sizeBase;
+      const entryPrice = Number(position.entryPrice) / 1e18;
+      const margin = Number(position.margin) / 1e6;
 
+      console.log("📋 Position Details:");
+      console.log("  Type:", isLong ? "LONG" : "SHORT");
+      console.log("  Size:", Number(positionSize) / 1e18, "VETH");
+      console.log("  Entry Price:", entryPrice.toFixed(2), "USD");
+      console.log("  Margin:", margin, "USDC");
+      console.log("  Current Price:", pythPrice.toFixed(2), "USD (from Pyth)");
+
+      // Calculate PnL
+      const notionalValue = (Number(positionSize) / 1e18) * pythPrice;
+      const entryNotional = (Number(positionSize) / 1e18) * entryPrice;
+      const unrealizedPnL = isLong
+        ? notionalValue - entryNotional
+        : entryNotional - notionalValue;
+      const pnlPercent = (unrealizedPnL / margin) * 100;
+
+      console.log("💰 Current PnL:");
+      console.log("  Unrealized PnL:", unrealizedPnL.toFixed(2), "USDC");
+      console.log("  PnL Percentage:", pnlPercent.toFixed(2) + "%");
+      console.log("  Current Notional:", notionalValue.toFixed(2), "USDC");
+
+      // Calculate size to close
+      const sizeToClose =
+        percentage === 100
+          ? positionSize
+          : (positionSize * BigInt(Math.floor(percentage * 100))) / 10000n;
+
+      const partialPnL =
+        percentage === 100 ? unrealizedPnL : (unrealizedPnL * percentage) / 100;
+
+      console.log("📊 Closing Details:");
+      console.log("  Size to close:", Number(sizeToClose) / 1e18, "VETH");
+      console.log(
+        "  Expected PnL from closure:",
+        partialPnL.toFixed(2),
+        "USDC"
+      );
+
+      // Get current mark price from hook
+      const currentMarkPrice = (await publicClient.readContract({
+        address: contracts.perpsHook.address,
+        abi: contracts.perpsHook.abi as any,
+        functionName: "getMarkPrice",
+        args: [poolId],
+      })) as bigint;
+
+      console.log(
+        "📊 Current Mark Price:",
+        Number(currentMarkPrice) / 1e18,
+        "USD"
+      );
+
+      // Close the position
+      console.log("🔄 Closing position...");
+
+      let closeTx: `0x${string}`;
       if (percentage === 100) {
-        // Full closure - use closePosition function
-        txHash = await writeContractAsync({
+        // Close entire position
+        closeTx = await writeContractAsync({
           address: contracts.positionManager.address,
-          abi: [
-            {
-              inputs: [
-                { name: "tokenId", type: "uint256" },
-                { name: "exitPrice", type: "uint256" },
-              ],
-              name: "closePosition",
-              outputs: [],
-              stateMutability: "nonpayable",
-              type: "function",
-            },
-          ],
+          abi: contracts.positionManager.abi as any,
           functionName: "closePosition",
-          args: [BigInt(params.tokenId), parseUnits(exitPrice.toString(), 18)],
+          args: [BigInt(params.tokenId), currentMarkPrice],
         });
       } else {
-        // Partial closure - use updatePosition function
-        console.log(
-          `Partial closing ${percentage}% of position ${params.tokenId}`
-        );
+        // Partial close - reduce position size using updatePosition
+        const newSize = positionSize - sizeToClose;
+        const adjustedSize = isLong ? newSize : -newSize;
+        const currentMargin = Number(position.margin); // Keep current margin
 
-        // Fetch current position details first
-        const currentPosition = (await publicClient.readContract({
+        closeTx = await writeContractAsync({
           address: contracts.positionManager.address,
-          abi: [
-            {
-              inputs: [{ name: "tokenId", type: "uint256" }],
-              name: "getPosition",
-              outputs: [
-                {
-                  components: [
-                    { name: "owner", type: "address" },
-                    { name: "margin", type: "uint96" },
-                    { name: "marketId", type: "bytes32" },
-                    { name: "sizeBase", type: "int256" },
-                    { name: "entryPrice", type: "uint256" },
-                    { name: "lastFundingIndex", type: "uint256" },
-                    { name: "openedAt", type: "uint64" },
-                    { name: "fundingPaid", type: "int256" },
-                  ],
-                  name: "",
-                  type: "tuple",
-                },
-              ],
-              stateMutability: "view",
-              type: "function",
-            },
-          ],
-          functionName: "getPosition",
-          args: [BigInt(params.tokenId)],
-        })) as any;
-
-        if (!currentPosition) {
-          throw new Error("Position not found");
-        }
-
-        // Calculate new size and margin based on percentage
-        const currentSize = Number(currentPosition.sizeBase);
-        const currentMargin = Number(currentPosition.margin);
-        const newSizePercentage = (100 - percentage) / 100;
-
-        const newSize = BigInt(Math.floor(currentSize * newSizePercentage));
-        const newMargin = BigInt(Math.floor(currentMargin * newSizePercentage));
-
-        console.log("Partial close calculation:", {
-          currentSize: currentSize / 1e18,
-          currentMargin: currentMargin / 1e6,
-          newSize: Number(newSize) / 1e18,
-          newMargin: Number(newMargin) / 1e6,
-          percentage,
-        });
-
-        // Check if new margin meets minimum requirement (100 USDC)
-        if (Number(newMargin) / 1e6 < 100) {
-          throw new Error(
-            `Cannot close ${percentage}% - remaining margin would be below minimum requirement (100 USDC)`
-          );
-        }
-
-        txHash = await writeContractAsync({
-          address: contracts.positionManager.address,
-          abi: [
-            {
-              inputs: [
-                { name: "tokenId", type: "uint256" },
-                { name: "newSizeBase", type: "int256" },
-                { name: "newMargin", type: "uint256" },
-              ],
-              name: "updatePosition",
-              outputs: [],
-              stateMutability: "nonpayable",
-              type: "function",
-            },
-          ],
+          abi: contracts.positionManager.abi as any,
           functionName: "updatePosition",
-          args: [BigInt(params.tokenId), newSize, newMargin],
+          args: [BigInt(params.tokenId), adjustedSize, currentMargin],
         });
       }
 
-      return { txHash, percentage };
+      console.log("🎉 Position closed successfully!");
+      console.log("📋 Transaction Hash:", closeTx);
+
+      // Rebalance the pool using the hook after closing the position
+      console.log(
+        "⚖️ Rebalancing virtual reserves using real-time Pyth price after closure..."
+      );
+
+      try {
+        // Get current virtual reserves
+        const marketStateBefore = (await publicClient.readContract({
+          address: contracts.perpsHook.address,
+          abi: contracts.perpsHook.abi as any,
+          functionName: "getMarketState",
+          args: [poolId],
+        })) as any;
+
+        console.log("📊 Virtual reserves before rebalancing:");
+        console.log(
+          "  Virtual Base:",
+          Number(marketStateBefore.virtualBase) / 1e18,
+          "VETH"
+        );
+        console.log(
+          "  Virtual Quote:",
+          Number(marketStateBefore.virtualQuote) / 1e6,
+          "USDC"
+        );
+        console.log(
+          "  Current Mark Price:",
+          (Number(marketStateBefore.virtualQuote) * 1e30) /
+            Number(marketStateBefore.virtualBase) /
+            1e18,
+          "USD/VETH"
+        );
+
+        // Rebalance to match real Pyth price with optimal liquidity
+        const targetPrice = pythPrice; // Use real Pyth price
+        const newVirtualQuote = 1200000000000n; // 1.2M USDC (optimal liquidity)
+        const newVirtualBase =
+          (newVirtualQuote * 1000000000000000000n) /
+          BigInt(Math.floor(targetPrice * 1e6)); // Calculate base for real price
+
+        console.log("🎯 Target rebalancing (using Pyth price after closure):");
+        console.log(
+          "  New Virtual Base:",
+          Number(newVirtualBase) / 1e18,
+          "VETH"
+        );
+        console.log(
+          "  New Virtual Quote:",
+          Number(newVirtualQuote) / 1e6,
+          "USDC"
+        );
+        console.log(
+          "  Target Price:",
+          targetPrice.toFixed(2),
+          "USD/VETH (from Pyth)"
+        );
+
+        const rebalanceTx = await writeContractAsync({
+          address: contracts.perpsHook.address,
+          abi: contracts.perpsHook.abi as any,
+          functionName: "emergencyRebalanceVAMM",
+          args: [poolId, newVirtualBase, newVirtualQuote],
+        });
+
+        console.log(
+          "✅ Virtual reserves rebalanced successfully after closure!"
+        );
+        console.log("📋 Rebalance Transaction Hash:", rebalanceTx);
+
+        // Verify the rebalancing
+        const marketStateAfter = (await publicClient.readContract({
+          address: contracts.perpsHook.address,
+          abi: contracts.perpsHook.abi as any,
+          functionName: "getMarketState",
+          args: [poolId],
+        })) as any;
+
+        console.log("📊 Virtual reserves after rebalancing:");
+        console.log(
+          "  Virtual Base:",
+          Number(marketStateAfter.virtualBase) / 1e18,
+          "VETH"
+        );
+        console.log(
+          "  Virtual Quote:",
+          Number(marketStateAfter.virtualQuote) / 1e6,
+          "USDC"
+        );
+        console.log(
+          "  New Mark Price:",
+          (Number(marketStateAfter.virtualQuote) * 1e30) /
+            Number(marketStateAfter.virtualBase) /
+            1e18,
+          "USD/VETH"
+        );
+      } catch (rebalanceError) {
+        console.error(
+          "⚠️ Rebalancing failed (position still closed successfully):",
+          rebalanceError
+        );
+      }
+
+      console.log("📊 Closure Summary:");
+      console.log("  Position ID:", params.tokenId);
+      console.log("  Type:", isLong ? "LONG" : "SHORT");
+      console.log("  Percentage Closed:", percentage + "%");
+      console.log("  Size Closed:", Number(sizeToClose) / 1e18, "VETH");
+      console.log("  Entry Price:", entryPrice.toFixed(2), "USD");
+      console.log("  Exit Price:", pythPrice.toFixed(2), "USD (Pyth)");
+      console.log("  Realized PnL:", partialPnL.toFixed(2), "USDC");
+
+      return {
+        txHash: closeTx,
+        percentage,
+        pythPrice,
+        realizedPnL: partialPnL,
+        sizeClosed: Number(sizeToClose) / 1e18,
+        positionType: isLong ? "LONG" : "SHORT",
+      };
     },
     onSuccess: () => {
       // Invalidate position queries to trigger refetch
