@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Star } from "lucide-react";
+import { Search, Star, Database, Upload } from "lucide-react";
 
 interface MarketSelectionDropdownProps {
   open: boolean;
@@ -87,6 +87,16 @@ export default function MarketSelectionDropdown({
                 <h3 className="text-base sm:text-lg font-semibold">
                   Select Market
                 </h3>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Database className="h-3 w-3" />
+                    <span>AMM Data</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Upload className="h-3 w-3" />
+                    <span>Lighthouse</span>
+                  </div>
+                </div>
               </div>
 
               {/* Search */}

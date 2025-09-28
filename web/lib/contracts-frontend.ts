@@ -243,28 +243,42 @@ interface ContractInfo<A = MarginAccountAbi> {
 
 interface ExternalContracts {
   [chainId: number]: {
-    marginAccount: ContractInfo<MarginAccountAbi>;
-    mockUSDC: ContractInfo<MockUSDCAbi>;
+    perpsRouter: ContractInfo;
     positionManager: ContractInfo;
+    marginAccount: ContractInfo<MarginAccountAbi>;
+    marketManager: ContractInfo;
     fundingOracle: ContractInfo;
     perpsHook: ContractInfo;
+    mockUSDC: ContractInfo<MockUSDCAbi>;
     mockVETH: ContractInfo;
+    insuranceFund: ContractInfo;
+    liquidationEngine: ContractInfo;
+    positionFactory: ContractInfo;
+    positionNFT: ContractInfo;
+    poolManager: ContractInfo;
+    uniswapPositionManager: ContractInfo;
+    poolSwapTest: ContractInfo;
+    poolModifyLiquidityTest: ContractInfo;
   };
 }
 
 export const externalContracts: ExternalContracts = {
   [UNICHAIN_SEPOLIA]: {
-    marginAccount: {
-      address: "0x7A191127944E3f5cC1C5D10B3991B03A82cAE791",
-      abi: marginAccountABI,
-    },
-    mockUSDC: {
-      address: "0x898d058e8f64D4e744b6B19f9967EdF1BAd9e111",
-      abi: mockUSDCABI,
+    perpsRouter: {
+      address: "0x683d4203587827F5658E0D09A832dCe374343553",
+      abi: [],
     },
     positionManager: {
       address: "0x5c5e20e9c600443040A770ce6A83840fdD1e4E22",
       abi: positionManagerABI,
+    },
+    marginAccount: {
+      address: "0x7A191127944E3f5cC1C5D10B3991B03A82cAE791",
+      abi: marginAccountABI,
+    },
+    marketManager: {
+      address: "0x2a98c921688eD538833509772dd5E33e43a6215b",
+      abi: [],
     },
     fundingOracle: {
       address: "0x8B262Ed4d0A11326f201D6ef41539825cb89B35a",
@@ -274,8 +288,44 @@ export const externalContracts: ExternalContracts = {
       address: "0xFe66Ae40cec317ec314cD6865fe23D79281e9Ac8",
       abi: perpsHookABI,
     },
+    mockUSDC: {
+      address: "0x898d058e8f64D4e744b6B19f9967EdF1BAd9e111",
+      abi: mockUSDCABI,
+    },
     mockVETH: {
       address: "0x03AFC3714cFB3B49CC8fe1CE23De2B24751D5d97",
+      abi: [],
+    },
+    insuranceFund: {
+      address: "0x2754BA7d581c9B1135Bb595baa030fEc47a06810",
+      abi: [],
+    },
+    liquidationEngine: {
+      address: "0x4A18FDa1A6F757Bbea5513A0fe56371FFb613b29",
+      abi: [],
+    },
+    positionFactory: {
+      address: "0x3113ABFbb24e5c24764BA720130021aF34497706",
+      abi: [],
+    },
+    positionNFT: {
+      address: "0x6C2689A59C9089ee2e9c915ab08EcD52e4F489aB",
+      abi: [],
+    },
+    poolManager: {
+      address: "0x00B036B58a818B1BC34d502D3fE730Db729e62AC",
+      abi: [],
+    },
+    uniswapPositionManager: {
+      address: "0xf969aee60879c54baaed9f3ed26147db216fd664",
+      abi: [],
+    },
+    poolSwapTest: {
+      address: "0x9140a78c1a137c7ff1c151ec8231272af78a99a4",
+      abi: [],
+    },
+    poolModifyLiquidityTest: {
+      address: "0x5fa728c0a5cfd51bee4b060773f50554c0c8a7ab",
       abi: [],
     },
   },

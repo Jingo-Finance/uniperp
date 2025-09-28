@@ -1,8 +1,8 @@
 "use client";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ChevronUp } from "lucide-react";
+import { ChevronUp, RefreshCw } from "lucide-react";
 import MarketSelectionDropdown from "./market-selection-modal";
 import dynamic from "next/dynamic";
 import { CandlestickSeries, createChart } from "lightweight-charts";
@@ -11,6 +11,8 @@ import { MarketList } from "@/data/market-list";
 import { useSpotData } from "@/hooks/api/use-market-data";
 import TimeframeSelector from "./timeframe-selector";
 import Image from "next/image";
+import { sendVAMMPriceToLighthouse } from "@/hooks/api/lighthouse-browser";
+import { useAMMPrice } from "@/hooks/api/use-amm-price";
 
 let tvScriptLoadingPromise: Promise<void> | undefined;
 
@@ -33,6 +35,16 @@ export default function TradingChart() {
   const availableMarkets = MarketList;
   const [isMarketModalOpen, setIsMarketModalOpen] = useState(false);
   const [chartType, setChartType] = useState<"spot" | "perp">("perp");
+  const [lighthouseCid, setLighthouseCid] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Use the AMM price hook
+  const {
+    data: ammData,
+    loading: ammLoading,
+    error: ammError,
+    fetchAMMPrice,
+  } = useAMMPrice();
 
   // Debug: Log chart type changes
   useEffect(() => {
@@ -42,6 +54,42 @@ export default function TradingChart() {
 
   // Use spot data hook - gets market from context
   const { prices, candlestickData, loading, error } = useSpotData();
+
+  // Function to upload AMM data to Lighthouse
+  const uploadAMMDataToLighthouse = useCallback(async () => {
+    if (!ammData || !ammData.vammPrice) return;
+
+    try {
+      setIsUploading(true);
+      console.log("🔄 Uploading AMM data to Lighthouse...");
+
+      // Upload to Lighthouse
+      const cid = await sendVAMMPriceToLighthouse(ammData.vammPrice);
+
+      if (cid) {
+        setLighthouseCid(cid);
+        console.log("✅ Data uploaded to Lighthouse, CID:", cid);
+      }
+    } catch (error) {
+      console.error("❌ Error uploading AMM data:", error);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [ammData]);
+
+  // Fetch AMM data when switching to perp chart
+  useEffect(() => {
+    if (chartType === "perp") {
+      fetchAMMPrice();
+    }
+  }, [chartType, fetchAMMPrice]);
+
+  // Upload to Lighthouse when AMM data is available
+  useEffect(() => {
+    if (ammData && ammData.vammPrice && !lighthouseCid) {
+      uploadAMMDataToLighthouse();
+    }
+  }, [ammData, lighthouseCid, uploadAMMDataToLighthouse]);
 
   // Initialize perp chart
   useEffect(() => {
@@ -68,31 +116,31 @@ export default function TradingChart() {
       wickDownColor: "#ef5350",
     });
 
-    // Set initial mock data to test chart visibility
-    const mockData = [
+    // Set initial data - will be updated with AMM data
+    const initialData = [
       {
         time: (Math.floor(Date.now() / 1000) - 3600) as any,
-        open: 100,
-        high: 105,
-        low: 95,
-        close: 102,
+        open: 4000,
+        high: 4020,
+        low: 3980,
+        close: 4010,
       },
       {
         time: (Math.floor(Date.now() / 1000) - 1800) as any,
-        open: 102,
-        high: 108,
-        low: 98,
-        close: 106,
+        open: 4010,
+        high: 4025,
+        low: 3995,
+        close: 4015,
       },
       {
         time: Math.floor(Date.now() / 1000) as any,
-        open: 106,
-        high: 110,
-        low: 104,
-        close: 108,
+        open: 4015,
+        high: 4030,
+        low: 4000,
+        close: 4010,
       },
     ];
-    candlestickSeries.setData(mockData);
+    candlestickSeries.setData(initialData);
 
     chartInstanceRef.current = chart;
     seriesRef.current = candlestickSeries;
@@ -226,7 +274,36 @@ export default function TradingChart() {
   useEffect(() => {
     if (chartType !== "perp") return;
 
-    if (candlestickData.length > 0 && seriesRef.current) {
+    // Use AMM data if available
+    if (ammData && ammData.vammPrice && seriesRef.current) {
+      const chartData = [
+        {
+          time: (Math.floor(Date.now() / 1000) - 3600) as any,
+          open: ammData.vammPrice * 0.995,
+          high: ammData.vammPrice * 1.005,
+          low: ammData.vammPrice * 0.99,
+          close: ammData.vammPrice * 0.998,
+        },
+        {
+          time: (Math.floor(Date.now() / 1000) - 1800) as any,
+          open: ammData.vammPrice * 0.998,
+          high: ammData.vammPrice * 1.002,
+          low: ammData.vammPrice * 0.996,
+          close: ammData.vammPrice * 1.001,
+        },
+        {
+          time: Math.floor(Date.now() / 1000) as any,
+          open: ammData.vammPrice * 1.001,
+          high: ammData.vammPrice * 1.003,
+          low: ammData.vammPrice * 0.999,
+          close: ammData.vammPrice,
+        },
+      ];
+
+      console.log("Setting AMM data:", chartData);
+      seriesRef.current.setData(chartData);
+      chartInstanceRef.current.timeScale().fitContent();
+    } else if (candlestickData.length > 0 && seriesRef.current) {
       console.log("Setting candlestick data:", candlestickData);
       seriesRef.current.setData(candlestickData);
       chartInstanceRef.current.timeScale().fitContent();
@@ -243,7 +320,7 @@ export default function TradingChart() {
       seriesRef.current.setData(fallbackData);
       chartInstanceRef.current.timeScale().fitContent();
     }
-  }, [candlestickData, prices, chartType]);
+  }, [candlestickData, prices, chartType, ammData]);
 
   const handleMarketSelect = (
     marketSymbol: string,
@@ -302,6 +379,62 @@ export default function TradingChart() {
                   triggerRef={marketButtonRef}
                 />
               </div>
+
+              {/* AMM Data Status */}
+              {chartType === "perp" && (
+                <div className="flex items-center gap-2 text-xs">
+                  {isUploading ? (
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                      <span>Uploading to Lighthouse...</span>
+                    </div>
+                  ) : lighthouseCid ? (
+                    <div className="flex items-center gap-1">
+                      <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                      <span className="text-green-500">Lighthouse:</span>
+                      <code className="text-xs bg-muted px-1 py-0.5 rounded">
+                        {lighthouseCid.slice(0, 8)}...
+                      </code>
+                    </div>
+                  ) : ammData?.vammPrice ? (
+                    <div className="flex items-center gap-1">
+                      <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
+                      <span className="text-yellow-500">
+                        vAMM: ${ammData.vammPrice.toFixed(2)}
+                      </span>
+                    </div>
+                  ) : ammLoading ? (
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                      <span>Loading AMM data...</span>
+                    </div>
+                  ) : ammError ? (
+                    <div className="flex items-center gap-1 text-destructive">
+                      <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                      <span>Error loading AMM data</span>
+                    </div>
+                  ) : null}
+
+                  {/* Refresh Button */}
+                  <button
+                    onClick={() => {
+                      fetchAMMPrice();
+                      if (ammData?.vammPrice) {
+                        uploadAMMDataToLighthouse();
+                      }
+                    }}
+                    disabled={isUploading || ammLoading}
+                    className="p-1 hover:bg-accent/50 rounded transition-colors disabled:opacity-50"
+                    title="Refresh AMM Data"
+                  >
+                    <RefreshCw
+                      className={`h-3 w-3 ${
+                        isUploading || ammLoading ? "animate-spin" : ""
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Timeframe selector */}

@@ -300,13 +300,12 @@ export default function Portfolio() {
 
       <CardContent className="p-0">
         {/* Table Header */}
-        <div className="hidden lg:grid lg:grid-cols-11 gap-2 px-4 py-2 text-xs text-muted-foreground border-b border-border bg-muted/20">
+        <div className="hidden lg:grid lg:grid-cols-10 gap-2 px-4 py-2 text-xs text-muted-foreground border-b border-border bg-muted/20">
           <span>ID</span>
           <span>Market</span>
           <span>Side</span>
           <span className="text-right">Size (VETH)</span>
           <span className="text-right">Entry Price</span>
-          <span className="text-right">Mark Price</span>
           <span className="text-right">Notional</span>
           <span className="text-right">PnL</span>
           <span className="text-right">Leverage</span>
@@ -342,7 +341,7 @@ export default function Portfolio() {
                     setIsModalOpen(true);
                   }}
                 >
-                  <div className="hidden lg:grid lg:grid-cols-11 gap-2 px-4 py-3 text-xs font-mono">
+                  <div className="hidden lg:grid lg:grid-cols-10 gap-2 px-4 py-3 text-xs font-mono">
                     <div className="flex items-center gap-1">
                       <span className="text-muted-foreground font-mono text-[10px]">
                         #{position.tokenId}
@@ -388,10 +387,6 @@ export default function Portfolio() {
                     </span>
                     <span className="text-right">
                       {position.entryPrice.toFixed(2)}
-                    </span>
-                    <span className="text-right">
-                      {positionsData?.currentMarkPrice?.toFixed(2) ||
-                        position.currentPrice.toFixed(2)}
                     </span>
                     <span className="text-right">
                       {position.currentNotional.toFixed(2)}
@@ -473,14 +468,6 @@ export default function Portfolio() {
                         <span className="text-muted-foreground">Entry:</span>
                         <div className="font-mono">
                           {position.entryPrice.toFixed(2)} USDC
-                        </div>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Mark:</span>
-                        <div className="font-mono">
-                          {positionsData?.currentMarkPrice?.toFixed(2) ||
-                            position.currentPrice.toFixed(2)}{" "}
-                          USDC
                         </div>
                       </div>
                       <div>

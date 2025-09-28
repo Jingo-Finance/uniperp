@@ -32,8 +32,19 @@ export default function TradingPanel() {
   const [isTransactionPending, setIsTransactionPending] = useState(false);
 
   const { address, isConnected } = useAccount();
-  const { data: balance } = useBalance({
+
+  // Get ETH balance
+  const { data: ethBalance } = useBalance({
     address,
+    query: {
+      enabled: !!address,
+    },
+  });
+
+  // Get USDC balance - you'll need to add the USDC token address
+  const { data: usdcBalance } = useBalance({
+    address,
+    token: "0x898d058e8f64D4e744b6B19f9967EdF1BAd9e111", // MockUSDC address from contracts
     query: {
       enabled: !!address,
     },
@@ -394,10 +405,10 @@ export default function TradingPanel() {
               </div>
             ) : (
               <span className="font-mono">
-                {isConnected && balance
-                  ? `${Number.parseFloat(balance.formatted).toFixed(4)} ${
-                      balance.symbol
-                    }`
+                {isConnected && usdcBalance
+                  ? `${Number.parseFloat(usdcBalance.formatted).toFixed(
+                      2
+                    )} USDC`
                   : "0.00 USDC"}
               </span>
             )}

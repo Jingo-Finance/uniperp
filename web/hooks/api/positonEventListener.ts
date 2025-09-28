@@ -196,6 +196,7 @@ class PositionEventListener {
       // Use the exact same scaling as showPositions.ts
       const sizeBase = Number(position.sizeBase) / 1e18;
       const entryPrice = Number(position.entryPrice) / 1e18;  // Correct scaling from showPositions.ts
+      console.log('Entry Price:', entryPrice);
       const margin = Number(position.margin) / 1e6;
       const isLong = Number(position.sizeBase) > 0;
       
