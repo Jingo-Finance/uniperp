@@ -156,6 +156,26 @@ const positionManagerABI = [
     stateMutability: "view",
     type: "function",
   },
+  {
+    inputs: [
+      { name: "tokenId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+    ],
+    name: "addMargin",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "tokenId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+    ],
+    name: "removeMargin",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
 ] as const;
 
 const fundingOracleABI = [
@@ -164,6 +184,36 @@ const fundingOracleABI = [
     name: "getMarkPrice",
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view",
+    type: "function",
+  },
+] as const;
+
+const perpsHookABI = [
+  {
+    inputs: [{ name: "poolId", type: "bytes32" }],
+    name: "getMarketState",
+    outputs: [
+      {
+        components: [
+          { name: "virtualBase", type: "uint128" },
+          { name: "virtualQuote", type: "uint128" },
+        ],
+        name: "",
+        type: "tuple",
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "poolId", type: "bytes32" },
+      { name: "newVirtualBase", type: "uint128" },
+      { name: "newVirtualQuote", type: "uint128" },
+    ],
+    name: "emergencyRebalanceVAMM",
+    outputs: [],
+    stateMutability: "nonpayable",
     type: "function",
   },
 ] as const;
@@ -190,28 +240,27 @@ interface ExternalContracts {
 export const externalContracts: ExternalContracts = {
   [UNICHAIN_SEPOLIA]: {
     marginAccount: {
-      address: "0x4Aa68070609C7EE42CDd7E431F202c0577c8556E",
+      address: "0x7A191127944E3f5cC1C5D10B3991B03A82cAE791",
       abi: marginAccountABI,
     },
     mockUSDC: {
-      address: "0xb2feD1a40Fe6CA0be97Cde27e1D2dF1CC65Fd101",
+      address: "0x898d058e8f64D4e744b6B19f9967EdF1BAd9e111",
       abi: mockUSDCABI,
     },
-    // Add other contract addresses from the working script
     positionManager: {
-      address: "0xD919D9FA466fD3e88640F97700640fbBb3214eB2",
+      address: "0x5c5e20e9c600443040A770ce6A83840fdD1e4E22",
       abi: positionManagerABI,
     },
     fundingOracle: {
-      address: "0xB07387d2ddF33372C9AE9D5aBe8f0850BD54444d",
+      address: "0x8B262Ed4d0A11326f201D6ef41539825cb89B35a",
       abi: fundingOracleABI,
     },
     perpsHook: {
-      address: "0x06cB25A0F63D88EAED5cb7273d4fab8516B41ac8",
-      abi: [],
+      address: "0xFe66Ae40cec317ec314cD6865fe23D79281e9Ac8",
+      abi: perpsHookABI,
     },
     mockVETH: {
-      address: "0x7f7FD1D6A6BF6225F4872Fc8aa165E43Bf22D30c",
+      address: "0x03AFC3714cFB3B49CC8fe1CE23De2B24751D5d97",
       abi: [],
     },
   },

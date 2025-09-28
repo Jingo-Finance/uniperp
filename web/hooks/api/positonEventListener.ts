@@ -88,7 +88,8 @@ class PositionEventListener {
   private getMarketName(marketId: string): string {
     // Map market IDs to readable names
     const marketMap: { [key: string]: string } = {
-      '0xb914c28d57aab1df4d75341ad953e33c214f76fb01305ad81ef741049579383e': 'VETH/USDC',
+      "0xb065747fa15a0575f95f40d2073b9e402f9964fbb57bdd2eb549b540fe197ac4":
+        "VETH/USDC",
       //'0xdb86d006b7f5ba7afb160f08da976bf53d7254e25da80f1dda0a5d36d26d656d': 'VETH/USDC',
     };
     

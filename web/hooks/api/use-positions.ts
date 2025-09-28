@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import { createPublicClient, http, defineChain } from "viem";
 import { parseUnits, formatUnits, encodeAbiParameters, keccak256 } from "viem";
-import { getContracts, UNICHAIN_SEPOLIA } from "@/lib/core";
+import { getContracts, UNICHAIN_SEPOLIA } from "@/lib/contracts-frontend";
 
 // Types
 export interface Position {
@@ -68,27 +68,49 @@ export const positionKeys = {
     [...positionKeys.all, "markPrice", poolId] as const,
 };
 
-// Utility functions
-export function calculatePoolId(
-  currency0: `0x${string}`,
-  currency1: `0x${string}`,
-  fee: number = 3000,
-  tickSpacing: number = 60,
-  hooks: `0x${string}`
-): `0x${string}` {
-  const poolKeyEncoded = encodeAbiParameters(
-    [
-      { type: "address", name: "currency0" },
-      { type: "address", name: "currency1" },
-      { type: "uint24", name: "fee" },
-      { type: "int24", name: "tickSpacing" },
-      { type: "address", name: "hooks" },
-    ],
-    [currency0, currency1, fee, tickSpacing, hooks]
-  );
-  return keccak256(poolKeyEncoded);
+// Pyth ETH/USD price feed ID
+const PYTH_ETH_USD_FEED_ID =
+  "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
+
+// Function to fetch real-time ETH price from Pyth
+async function fetchPythPrice(): Promise<number> {
+  try {
+    const response = await fetch(
+      `https://hermes.pyth.network/api/latest_price_feeds?ids[]=${PYTH_ETH_USD_FEED_ID}`
+    );
+    const data = await response.json();
+
+    if (data && data.length > 0) {
+      const priceData = data[0].price;
+      const price = parseInt(priceData.price);
+      const expo = priceData.expo;
+      const actualPrice = price * Math.pow(10, expo);
+
+      console.log("📡 Pyth Network Price Feed:");
+      console.log("  Raw Price:", price);
+      console.log("  Exponent:", expo);
+      console.log("  Actual ETH Price:", actualPrice.toFixed(2), "USD");
+      console.log(
+        "  Confidence:",
+        parseInt(data[0].price.conf) * Math.pow(10, expo)
+      );
+      console.log(
+        "  Publish Time:",
+        new Date(data[0].price.publish_time * 1000).toISOString()
+      );
+
+      return actualPrice;
+    } else {
+      throw new Error("No price data received from Pyth");
+    }
+  } catch (error) {
+    console.error("❌ Failed to fetch Pyth price:", error);
+    console.log("🔄 Falling back to default price of $2000");
+    return 2000; // Fallback price
+  }
 }
 
+// Utility functions
 export function calculatePositionSize(
   margin: number,
   leverage: number,
@@ -148,14 +170,16 @@ export function usePositionsWithBalance() {
 
         console.log(`🔍 Found ${userPositions.length} position(s)`);
 
+        // Use hardcoded pool ID that we know works
+        const poolId =
+          "0xb065747fa15a0575f95f40d2073b9e402f9964fbb57bdd2eb549b540fe197ac4";
+
         // Get current mark price
         const markPrice = (await publicClient.readContract({
           address: contracts.fundingOracle.address,
           abi: contracts.fundingOracle.abi as any,
           functionName: "getMarkPrice",
-          args: [
-            "0xdb86d006b7f5ba7afb160f08da976bf53d7254e25da80f1dda0a5d36d26d656d",
-          ],
+          args: [poolId],
         })) as bigint;
 
         const currentMarkPrice = Number(markPrice) / 1e18;
@@ -344,57 +368,44 @@ export function useOpenPosition() {
       const transport = http(RPC_URL);
       const publicClient = createPublicClient({ transport, chain });
 
-      // Calculate pool ID using the exact same method as the working script
-      const fee = 3000; // 0.3%
-      const tickSpacing = 60;
-      const hooks = contracts.perpsHook.address;
+      // Calculate pool ID based on position type (same as working scripts)
+      let poolId: string;
+      if (params.isLong) {
+        // For LONG positions: USDC as currency0, VETH as currency1
+        poolId =
+          "0xb065747fa15a0575f95f40d2073b9e402f9964fbb57bdd2eb549b540fe197ac4";
+      } else {
+        // For SHORT positions: VETH as currency0, USDC as currency1
+        const poolKey = encodeAbiParameters(
+          [
+            { name: "currency0", type: "address" },
+            { name: "currency1", type: "address" },
+            { name: "fee", type: "uint24" },
+            { name: "tickSpacing", type: "int24" },
+            { name: "hooks", type: "address" },
+          ],
+          [
+            contracts.mockVETH.address,
+            contracts.mockUSDC.address,
+            3000,
+            60,
+            contracts.perpsHook.address,
+          ]
+        );
+        poolId = keccak256(poolKey);
+      }
+      console.log("🆔 Using pool ID:", poolId);
+      console.log("📊 Position Type:", params.isLong ? "LONG" : "SHORT");
 
-      // Order currencies by address (lower address = currency0) - same as script
-      const [currency0, currency1] =
-        contracts.mockUSDC.address.toLowerCase() <
-        contracts.mockVETH.address.toLowerCase()
-          ? [contracts.mockUSDC.address, contracts.mockVETH.address]
-          : [contracts.mockVETH.address, contracts.mockUSDC.address];
-
-      console.log("💱 Pool Configuration:");
-      console.log("  Currency0:", currency0);
-      console.log("  Currency1:", currency1);
-      console.log("  Fee:", fee, "bps");
-      console.log("  Hook:", hooks);
-
-      // Calculate poolId using the same method as Uniswap V4
-      const poolKeyEncoded = encodeAbiParameters(
-        [
-          { type: "address", name: "currency0" },
-          { type: "address", name: "currency1" },
-          { type: "uint24", name: "fee" },
-          { type: "int24", name: "tickSpacing" },
-          { type: "address", name: "hooks" },
-        ],
-        [currency0, currency1, fee, tickSpacing, hooks]
-      );
-      const poolId = keccak256(poolKeyEncoded);
-      console.log("🆔 Calculated pool ID:", poolId);
-
-      // Get current mark price from oracle (same as working script)
+      // Get current mark price from oracle
       const markPrice = (await publicClient.readContract({
         address: contracts.fundingOracle.address,
-        abi: [
-          {
-            inputs: [{ name: "poolId", type: "bytes32" }],
-            name: "getMarkPrice",
-            outputs: [{ name: "", type: "uint256" }],
-            stateMutability: "view",
-            type: "function",
-          },
-        ],
+        abi: contracts.fundingOracle.abi as any,
         functionName: "getMarkPrice",
         args: [poolId],
       })) as bigint;
 
-      const entryPrice = markPrice;
       const priceUSDCPerVETH = Number(formatUnits(markPrice, 18));
-
       console.log("📊 Current Mark Price:", priceUSDCPerVETH, "USDC per VETH");
 
       // Calculate position size using the same method as working script
@@ -402,52 +413,190 @@ export function useOpenPosition() {
       const positionSizeVETH = notionalValueUSDC / priceUSDCPerVETH;
 
       // Convert to contract units (same as working script)
-      const positionSizeWei = BigInt(Math.floor(positionSizeVETH * 1e18));
-      const margin = parseUnits(params.margin.toString(), 6); // USDC has 6 decimals
+      // For SHORT: negative sizeBase indicates short position
+      const positionSizeWei = params.isLong
+        ? BigInt(Math.floor(positionSizeVETH * 1e18)) // Positive for LONG
+        : -BigInt(Math.floor(positionSizeVETH * 1e18)); // Negative for SHORT
+      const marginAmountWei = parseUnits(params.margin.toString(), 6); // USDC has 6 decimals
 
-      console.log("📈 Expected Position Size:", positionSizeVETH, "VETH");
+      console.log(
+        "📈 Expected Position Size:",
+        Math.abs(positionSizeVETH),
+        "VETH",
+        params.isLong ? "(LONG)" : "(SHORT)"
+      );
       console.log("💵 Expected Notional Value:", notionalValueUSDC, "USDC");
-      console.log("🔢 Position Size Wei:", positionSizeWei.toString());
-      console.log("🔢 Margin Wei:", margin.toString());
+      console.log(
+        "🔢 Position Size Wei:",
+        positionSizeWei.toString(),
+        params.isLong ? "(positive = LONG)" : "(negative = SHORT)"
+      );
+      console.log("🔢 Margin Wei:", marginAmountWei.toString());
 
-      console.log("📝 Calling contract with parameters:");
-      console.log("  Contract Address:", contracts.positionManager.address);
-      console.log("  Pool ID:", poolId);
+      // Check USDC balance before proceeding
+      const usdcBalance = (await publicClient.readContract({
+        address: contracts.mockUSDC.address,
+        abi: contracts.mockUSDC.abi as any,
+        functionName: "balanceOf",
+        args: [address as `0x${string}`],
+      })) as bigint;
+
+      console.log("💳 Current USDC Balance:", Number(usdcBalance) / 1e6);
+
+      if (usdcBalance < marginAmountWei) {
+        throw new Error(
+          `Insufficient USDC balance. Need ${params.margin} but have ${
+            Number(usdcBalance) / 1e6
+          }`
+        );
+      }
+
+      // Step 1: Approve USDC for MarginAccount
+      console.log("💰 Approving USDC for MarginAccount...");
+      const approveTx = await writeContractAsync({
+        address: contracts.mockUSDC.address,
+        abi: contracts.mockUSDC.abi as any,
+        functionName: "approve",
+        args: [contracts.marginAccount.address, marginAmountWei],
+      });
+      console.log("✅ USDC approved for MarginAccount");
+
+      // Step 2: Deposit USDC to MarginAccount
+      console.log("💰 Depositing margin to MarginAccount...");
+      const depositTx = await writeContractAsync({
+        address: contracts.marginAccount.address,
+        abi: contracts.marginAccount.abi as any,
+        functionName: "deposit",
+        args: [marginAmountWei],
+      });
+      console.log("✅ Margin deposited to MarginAccount");
+
+      // Step 3: Open position via PositionManager
+      console.log(
+        "🔄 Opening",
+        params.isLong ? "LONG" : "SHORT",
+        "position via PositionManager..."
+      );
+      const marketId = poolId;
+      const sizeBase = positionSizeWei; // Already has correct sign (+ for LONG, - for SHORT)
+      const entryPrice = markPrice;
+      const margin = marginAmountWei;
+
+      console.log("📋 Position Manager Parameters:");
+      console.log("  Market ID:", marketId);
       console.log(
         "  Size Base:",
-        params.isLong ? positionSizeWei : -positionSizeWei
+        sizeBase.toString(),
+        params.isLong ? "(positive = LONG)" : "(negative = SHORT)"
       );
-      console.log("  Entry Price:", entryPrice);
-      console.log("  Margin:", margin);
-      console.log("  Is Long:", params.isLong);
+      console.log("  Entry Price:", entryPrice.toString());
+      console.log("  Margin:", margin.toString());
+      console.log("  Position Type:", params.isLong ? "LONG" : "SHORT");
 
-      const txHash = await writeContractAsync({
+      const openPositionTx = await writeContractAsync({
         address: contracts.positionManager.address,
-        abi: [
-          {
-            inputs: [
-              { name: "marketId", type: "bytes32" },
-              { name: "sizeBase", type: "int256" },
-              { name: "entryPrice", type: "uint256" },
-              { name: "margin", type: "uint256" },
-            ],
-            name: "openPosition",
-            outputs: [{ name: "", type: "uint256" }],
-            stateMutability: "nonpayable",
-            type: "function",
-          },
-        ],
+        abi: contracts.positionManager.abi as any,
         functionName: "openPosition",
-        args: [
-          poolId,
-          params.isLong ? positionSizeWei : -positionSizeWei,
-          entryPrice,
-          margin,
-        ],
+        args: [marketId, sizeBase, entryPrice, margin],
       });
 
-      console.log("✅ Contract call successful! Transaction hash:", txHash);
-      return { txHash, poolId };
+      console.log(
+        "✅",
+        params.isLong ? "LONG" : "SHORT",
+        "position opened successfully! Transaction hash:",
+        openPositionTx
+      );
+
+      // Step 4: Optional pool rebalancing with Pyth price
+      try {
+        console.log(
+          "⚖️ Attempting pool rebalancing with Pyth price after",
+          params.isLong ? "LONG" : "SHORT",
+          "position..."
+        );
+
+        // Fetch real-time ETH price from Pyth
+        const pythPrice = await fetchPythPrice();
+
+        // Get current virtual reserves
+        const marketStateBefore = (await publicClient.readContract({
+          address: contracts.perpsHook.address,
+          abi: contracts.perpsHook.abi as any,
+          functionName: "getMarketState",
+          args: [poolId],
+        })) as any;
+
+        console.log("📊 Virtual reserves before rebalancing:");
+        console.log(
+          "  Virtual Base:",
+          Number(marketStateBefore.virtualBase) / 1e18,
+          "VETH"
+        );
+        console.log(
+          "  Virtual Quote:",
+          Number(marketStateBefore.virtualQuote) / 1e6,
+          "USDC"
+        );
+
+        // Rebalance to match real Pyth price with increased liquidity
+        const targetPrice = pythPrice;
+        const newVirtualQuote = 1200000000000n; // 1.2M USDC (increased liquidity)
+        const newVirtualBase =
+          (newVirtualQuote * 1000000000000000000n) /
+          BigInt(Math.floor(targetPrice * 1e6));
+
+        console.log(
+          "🎯 Target rebalancing (",
+          params.isLong ? "LONG" : "SHORT",
+          "position using Pyth price):"
+        );
+        console.log(
+          "  New Virtual Base:",
+          Number(newVirtualBase) / 1e18,
+          "VETH"
+        );
+        console.log(
+          "  New Virtual Quote:",
+          Number(newVirtualQuote) / 1e6,
+          "USDC"
+        );
+        console.log(
+          "  Target Price:",
+          targetPrice.toFixed(2),
+          "USD/VETH (from Pyth)"
+        );
+
+        const rebalanceTx = await writeContractAsync({
+          address: contracts.perpsHook.address,
+          abi: contracts.perpsHook.abi as any,
+          functionName: "emergencyRebalanceVAMM",
+          args: [poolId, newVirtualBase, newVirtualQuote],
+        });
+
+        console.log(
+          "✅ Virtual reserves rebalanced successfully after",
+          params.isLong ? "LONG" : "SHORT",
+          "position!"
+        );
+        console.log("📋 Rebalance Transaction Hash:", rebalanceTx);
+      } catch (rebalanceError) {
+        console.error("⚠️ Rebalancing failed:", rebalanceError);
+        console.log(
+          "ℹ️",
+          params.isLong ? "LONG" : "SHORT",
+          "position was opened successfully, but rebalancing encountered an issue"
+        );
+      }
+
+      return {
+        txHash: openPositionTx,
+        poolId,
+        positionSize: Math.abs(positionSizeVETH), // Always return positive size
+        notionalValue: notionalValueUSDC,
+        entryPrice: priceUSDCPerVETH,
+        positionType: params.isLong ? "LONG" : "SHORT",
+        isLong: params.isLong,
+      };
     },
     onSuccess: () => {
       // Invalidate position queries to trigger refetch
@@ -458,6 +607,48 @@ export function useOpenPosition() {
       console.log("🔄 Position data invalidated after position open");
     },
   });
+}
+
+// Convenience hook for opening short positions
+export function useOpenShortPosition() {
+  const openPosition = useOpenPosition();
+
+  return {
+    ...openPosition,
+    mutate: (params: Omit<CreatePositionParams, "isLong">) => {
+      return openPosition.mutate({
+        ...params,
+        isLong: false, // Always set to false for short positions
+      });
+    },
+    mutateAsync: (params: Omit<CreatePositionParams, "isLong">) => {
+      return openPosition.mutateAsync({
+        ...params,
+        isLong: false, // Always set to false for short positions
+      });
+    },
+  };
+}
+
+// Convenience hook for opening long positions
+export function useOpenLongPosition() {
+  const openPosition = useOpenPosition();
+
+  return {
+    ...openPosition,
+    mutate: (params: Omit<CreatePositionParams, "isLong">) => {
+      return openPosition.mutate({
+        ...params,
+        isLong: true, // Always set to true for long positions
+      });
+    },
+    mutateAsync: (params: Omit<CreatePositionParams, "isLong">) => {
+      return openPosition.mutateAsync({
+        ...params,
+        isLong: true, // Always set to true for long positions
+      });
+    },
+  };
 }
 
 export function useClosePosition() {
@@ -720,6 +911,8 @@ export function useRemoveMargin() {
 // Combined hook for all position operations
 export function usePositionManagement() {
   const openPosition = useOpenPosition();
+  const openLongPosition = useOpenLongPosition();
+  const openShortPosition = useOpenShortPosition();
   const closePosition = useClosePosition();
   const addMargin = useAddMargin();
   const removeMargin = useRemoveMargin();
@@ -732,6 +925,8 @@ export function usePositionManagement() {
     isLoading: positionsData.isLoading,
     error: positionsData.error,
     openPosition,
+    openLongPosition,
+    openShortPosition,
     closePosition,
     addMargin,
     removeMargin,
