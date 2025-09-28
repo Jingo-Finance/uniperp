@@ -7,8 +7,8 @@ import {IPoolManager, SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
-import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -28,6 +28,7 @@ contract PerpsHook is BaseHook {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
     using SafeCast for int256;
+    using CurrencyLibrary for Currency;
 
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
@@ -49,11 +50,6 @@ contract PerpsHook is BaseHook {
     event FundingIndexUpdated(PoolId indexed poolId, int256 fundingIndex);
     event PositionOpened(PoolId indexed poolId, address indexed trader, uint256 tokenId, int256 size, uint256 margin);
     event PositionClosed(PoolId indexed poolId, address indexed trader, uint256 tokenId, int256 pnl);
-    
-    // Essential debug events
-    event DebugBeforeSwap(PoolId indexed poolId, uint8 operation, uint256 size, uint256 margin);
-    event DebugValidation(PoolId indexed poolId, uint256 markPrice, uint256 notionalSize);
-    event DebugError(string step, string reason);
 
     /*//////////////////////////////////////////////////////////////
                                 STRUCTS
@@ -144,7 +140,7 @@ contract PerpsHook is BaseHook {
             afterSwap: true,
             beforeDonate: false,
             afterDonate: false,
-            beforeSwapReturnDelta: true,
+            beforeSwapReturnDelta: true,  // Critical: Enable custom delta returns for vAMM pricing
             afterSwapReturnDelta: false,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
@@ -169,9 +165,9 @@ contract PerpsHook is BaseHook {
         address spotPriceFeed = address(0);
         
         // Calculate virtual reserves based on initial price and liquidity
-        // For ETH/USDC: virtualQuote = sqrt(K), virtualBase = K / virtualQuote / price
+        // For ETH/USDC: virtualQuote = 1M USDC (in 6 decimals), virtualBase = liquidity/price (in 18 decimals)
         uint256 virtualQuote = virtualLiquidity; // e.g., 1M USDC (1e12 in 6 decimals)
-        uint256 virtualBase = (virtualLiquidity * 1e18) / initialPrice; // Convert to 18 decimals for base
+        uint256 virtualBase = (virtualLiquidity * 1e30) / initialPrice; // Convert USDC to 18 decimals then divide by price
         uint256 k = virtualBase * virtualQuote;
         
         markets[poolId] = MarketState({
@@ -209,7 +205,7 @@ contract PerpsHook is BaseHook {
         return INITIAL_ETH_PRICE; // $2000 for ETH
     }
 
-    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+    function _beforeSwap(address /* sender */, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
@@ -226,7 +222,6 @@ contract PerpsHook is BaseHook {
         
         // Decode trade parameters
         TradeParams memory trade = abi.decode(hookData, (TradeParams));
-        emit DebugBeforeSwap(poolId, trade.operation, trade.size, trade.margin);
         
         // Update funding if enough time has passed
         _updateFundingIfNeeded(poolId);
@@ -234,30 +229,21 @@ contract PerpsHook is BaseHook {
         // Perform validations and calculations
         _validateTrade(poolId, trade, params);
         
-        // Calculate vAMM pricing and dynamic fee
-        (uint256 amountOut, uint24 dynamicFee) = _calculateVAMMSwap(poolId, trade, params);
-        
-        // For position operations, we need to override the swap behavior
+        // For position operations, we need to implement custom vAMM pricing curve
         if (trade.operation <= 3) { // Position operations
-            // Return delta to prevent actual pool swap
-            int128 specifiedDelta = params.amountSpecified < 0 ? 
-                params.amountSpecified.toInt128() : 
-                -params.amountSpecified.toInt128();
-            
-            BeforeSwapDelta delta = BeforeSwapDeltaLibrary.ZERO_DELTA;
-            return (BaseHook.beforeSwap.selector, delta, dynamicFee);
+            return _executeVAMMPricing(poolId, key, params, trade);
         }
         
-        return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, dynamicFee);
+        // For non-position operations (margin adjustments), allow normal processing
+        return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
-    function _afterSwap(address sender, PoolKey calldata key, SwapParams calldata params, BalanceDelta, bytes calldata hookData)
+    function _afterSwap(address /* sender */, PoolKey calldata key, SwapParams calldata params, BalanceDelta /* delta */, bytes calldata hookData)
         internal
         override
         returns (bytes4, int128)
     {
         PoolId poolId = key.toId();
-        MarketState storage market = markets[poolId];
         
         // If no hookData, this was a regular swap - no perp logic needed
         if (hookData.length == 0) {
@@ -361,10 +347,114 @@ contract PerpsHook is BaseHook {
     }
 
     /*//////////////////////////////////////////////////////////////
+                        VAMM PRICING IMPLEMENTATION
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Execute vAMM pricing curve for perp trades
+    /// @param poolId Pool identifier
+    /// @param key Pool key
+    /// @param params Swap parameters
+    /// @param trade Trade parameters
+    /// @return Selector, delta, and dynamic fee
+    function _executeVAMMPricing(PoolId poolId, PoolKey calldata key, SwapParams calldata params, TradeParams memory trade)
+        internal
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
+        // Get mark price (mean of vAMM and spot price) 
+        uint256 markPrice = _getMarkPrice(poolId);
+        
+        // Calculate dynamic fee including funding adjustment
+        bool isLong = (trade.operation == 0 || trade.operation == 2);
+        int256 fundingAdjustment = _calculateFundingFeeAdjustment(poolId, isLong);
+        int256 feeSum = int256(TRADE_FEE_BPS) + fundingAdjustment;
+        
+        // Ensure fee is within valid range for uint24
+        if (feeSum < 0) feeSum = 0;
+        if (feeSum > 16777215) feeSum = 16777215; // type(uint24).max
+        uint24 dynamicFee = uint24(uint256(feeSum));
+        
+        // Execute the custom vAMM swap with proper currency settlement
+        BeforeSwapDelta delta = _executeVAMMSwap(key, params, markPrice);
+        
+        return (BaseHook.beforeSwap.selector, delta, dynamicFee);
+    }
+
+    /// @notice Execute vAMM swap with proper currency settlement
+    /// @param key Pool key
+    /// @param params Swap parameters  
+    /// @param markPrice Current mark price
+    /// @return BeforeSwapDelta for the executed swap
+    function _executeVAMMSwap(PoolKey calldata key, SwapParams calldata params, uint256 markPrice)
+        internal
+        returns (BeforeSwapDelta)
+    {
+        bool exactInput = params.amountSpecified < 0;
+        bool zeroForOne = params.zeroForOne;
+        
+        // Determine input and output currencies
+        (Currency inputCurrency, Currency outputCurrency) = zeroForOne 
+            ? (key.currency0, key.currency1)
+            : (key.currency1, key.currency0);
+            
+        if (exactInput) {
+            uint256 inputAmount = uint256(-params.amountSpecified);
+            uint256 outputAmount;
+            
+            if (zeroForOne) {
+                // Selling currency0 (ETH) for currency1 (USDC)
+                outputAmount = (inputAmount * markPrice) / 1e30;
+            } else {
+                // Buying currency0 (ETH) with currency1 (USDC)
+                outputAmount = (inputAmount * 1e30) / markPrice;
+            }
+            
+            // Execute the currency movements
+            poolManager.take(inputCurrency, address(this), inputAmount);
+            _settleCurrency(outputCurrency, outputAmount);
+            
+            // Return delta to cancel pool's swap and reflect our custom amounts
+            return toBeforeSwapDelta(int128(-params.amountSpecified), int128(int256(outputAmount)));
+        } else {
+            uint256 outputAmount = uint256(params.amountSpecified);
+            uint256 inputAmount;
+            
+            if (zeroForOne) {
+                // User wants specific USDC, calculate ETH input
+                inputAmount = (outputAmount * 1e30) / markPrice;
+            } else {
+                // User wants specific ETH, calculate USDC input
+                inputAmount = (outputAmount * markPrice) / 1e30;
+            }
+            
+            // Execute the currency movements
+            poolManager.take(inputCurrency, address(this), inputAmount);
+            _settleCurrency(outputCurrency, outputAmount);
+            
+            // Return delta to cancel pool's swap and reflect our custom amounts
+            return toBeforeSwapDelta(-int128(int256(inputAmount)), int128(params.amountSpecified));
+        }
+    }
+
+    /// @notice Settle a currency to the PoolManager
+    /// @param currency Currency to settle
+    /// @param amount Amount to settle
+    function _settleCurrency(Currency currency, uint256 amount) internal {
+        if (amount == 0) return;
+        
+        if (currency.isAddressZero()) {
+            poolManager.settle{value: amount}();
+        } else {
+            poolManager.sync(currency);
+            IERC20(Currency.unwrap(currency)).safeTransfer(address(poolManager), amount);
+            poolManager.settle();
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
                             INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _validateTrade(PoolId poolId, TradeParams memory trade, SwapParams calldata params) internal {
+    function _validateTrade(PoolId poolId, TradeParams memory trade, SwapParams calldata /* params */) internal view {
         MarketState storage market = markets[poolId];
         
         // Price band check
@@ -377,7 +467,6 @@ contract PerpsHook is BaseHook {
                 ((spotPrice - currentMarkPrice) * 10000) / spotPrice;
             
             if (deviation > MAX_DEVIATION_BPS) {
-                emit DebugError("priceBand", "Price deviation too high");
                 revert PriceBandExceeded();
             }
         }
@@ -387,16 +476,12 @@ contract PerpsHook is BaseHook {
             uint256 notionalSize = (trade.size * currentMarkPrice) / 1e18;  // This gives us USDC in 18 decimals
             notionalSize = notionalSize / 1e12;  // Convert to 6 decimals to match USDC
             
-            emit DebugValidation(poolId, currentMarkPrice, notionalSize);
-            
             if (trade.operation == 0) { // Long
                 if (market.totalLongOI + notionalSize > market.maxOICap) {
-                    emit DebugError("openInterest", "Long OI cap exceeded");
                     revert OpenInterestCapExceeded();
                 }
             } else { // Short
                 if (market.totalShortOI + notionalSize > market.maxOICap) {
-                    emit DebugError("openInterest", "Short OI cap exceeded");
                     revert OpenInterestCapExceeded();
                 }
             }
@@ -407,49 +492,13 @@ contract PerpsHook is BaseHook {
             uint256 requiredMargin = _calculateRequiredMargin(trade.size, currentMarkPrice);
             
             if (trade.margin < requiredMargin) {
-                emit DebugError("margin", "Insufficient margin");
                 revert InsufficientMargin();
             }
         }
     }
 
-    function _calculateVAMMSwap(PoolId poolId, TradeParams memory trade, SwapParams calldata params) 
-        internal 
-        view 
-        returns (uint256 amountOut, uint24 dynamicFee) 
-    {
-        MarketState storage market = markets[poolId];
-        
-        // Calculate trade direction and size
-        bool isLong = (trade.operation == 0 || trade.operation == 2);
-        uint256 tradeSize = trade.size;
-        
-        if (isLong) {
-            // Long: swap quote -> base (buying base with quote)
-            uint256 newQuoteReserve = market.virtualQuote + ((tradeSize * _getMarkPrice(poolId)) / 1e18);
-            uint256 newBaseReserve = market.k / newQuoteReserve;
-            amountOut = market.virtualBase - newBaseReserve;
-        } else {
-            // Short: swap base -> quote (selling base for quote)
-            uint256 newBaseReserve = market.virtualBase + tradeSize;
-            uint256 newQuoteReserve = market.k / newBaseReserve;
-            amountOut = market.virtualQuote - newQuoteReserve;
-        }
-        
-        // Calculate dynamic fee including funding adjustment
-        int256 fundingAdjustment = _calculateFundingFeeAdjustment(poolId, isLong);
-        int256 feeSum = int256(TRADE_FEE_BPS) + fundingAdjustment;
-        
-        // Ensure fee is within valid range for uint24
-        if (feeSum < 0) feeSum = 0;
-        if (feeSum > 16777215) feeSum = 16777215; // type(uint24).max = 2^24 - 1
-        
-        dynamicFee = uint24(uint256(feeSum));
-        
-        return (amountOut, dynamicFee);
-    }
 
-    function _executeOpenPosition(PoolId poolId, TradeParams memory trade, SwapParams calldata params) internal {
+    function _executeOpenPosition(PoolId poolId, TradeParams memory trade, SwapParams calldata /* params */) internal {
         MarketState storage market = markets[poolId];
         
         // Calculate entry price and update virtual reserves
@@ -473,12 +522,8 @@ contract PerpsHook is BaseHook {
         bytes32 marketId = bytes32(PoolId.unwrap(poolId));
         
         if (trade.tokenId == 0) {
-            // New position - Handle margin through MarginAccount
-            // Transfer margin from trader to MarginAccount
-            USDC.safeTransferFrom(trade.trader, address(marginAccount), trade.margin);
-            
-            // Deposit the margin to the user's free balance in MarginAccount
-            marginAccount.depositFor(trade.trader, trade.margin);
+            // New position - Margin should already be deposited by the caller
+            // The hook assumes margin is already in the MarginAccount
             
             // Create position using the hook-specific function
             // PositionManager will lock the margin from the user's free balance
@@ -500,7 +545,7 @@ contract PerpsHook is BaseHook {
         emit VirtualReservesUpdated(poolId, market.virtualBase, market.virtualQuote);
     }
 
-    function _executeClosePosition(PoolId poolId, TradeParams memory trade, SwapParams calldata params) internal {
+    function _executeClosePosition(PoolId poolId, TradeParams memory trade, SwapParams calldata /* params */) internal {
         MarketState storage market = markets[poolId];
         
         // Get position details
@@ -532,13 +577,8 @@ contract PerpsHook is BaseHook {
     }
 
     function _executeAddMargin(TradeParams memory trade) internal {
-        // Transfer additional margin from trader to MarginAccount
-        USDC.safeTransferFrom(trade.trader, address(marginAccount), trade.margin);
-        
-        // Deposit to user's free balance
-        marginAccount.depositFor(trade.trader, trade.margin);
-        
-        // Add margin to position (PositionManager will lock it)
+        // Margin should already be deposited by the caller
+        // Add margin to position (PositionManager will lock it from free balance)
         positionManager.addMargin(trade.tokenId, trade.margin);
     }
 
@@ -575,8 +615,6 @@ contract PerpsHook is BaseHook {
     }
 
     function _calculateFundingFeeAdjustment(PoolId poolId, bool isLong) internal view returns (int256) {
-        MarketState storage market = markets[poolId];
-        
         // If funding rate is positive (perp > spot), longs pay more, shorts pay less
         int256 fundingRate = _calculateFundingRate(poolId);
         int256 adjustment = isLong ? fundingRate / 100 : -fundingRate / 100; // Convert to basis points
@@ -622,9 +660,15 @@ contract PerpsHook is BaseHook {
         MarketState storage market = markets[poolId];
         
         // Get vAMM virtual price
-        // virtualQuote is in 6 decimals (USDC), virtualBase is in 18 decimals (VETH)
+        // virtualQuote is in 6 decimals (USDC), virtualBase is in 18 decimals (ETH)
         // Price should be in 18 decimals: (virtualQuote * 1e30) / virtualBase
-        // We multiply by 1e30 = 1e12 (to convert USDC 6->18 decimals) * 1e18 (price precision)
+        // We multiply by 1e30 = 1e12 (convert USDC 6->18 decimals) * 1e18 (price precision)
+        
+        // Debug: Check for zero values
+        if (market.virtualBase == 0) {
+            return INITIAL_ETH_PRICE; // Fallback if virtualBase is 0
+        }
+        
         uint256 vammPrice = (market.virtualQuote * 1e30) / market.virtualBase;
         
         // Try to get spot price from FundingOracle
@@ -700,3 +744,4 @@ contract PerpsHook is BaseHook {
         owner = newOwner;
     }
 }
+
